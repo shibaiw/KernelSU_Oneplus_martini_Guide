@@ -1,0 +1,164 @@
+name: Pixel OS SUSFS & LXC Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      RELEASE_CONFIG:
+        description: '是否上传到 Release'
+        required: true
+        default: true
+        type: boolean
+      KERNEL_SOURCE:
+        description: '内核源码地址'
+        required: true
+        default: "https://github.com/natsumerinchan/android_kernel_oneplus_sm8350.git"
+        type: string
+      KERNEL_SOURCE_BRANCH:
+        description: '内核分支'
+        required: true
+        default: "fourteen-qpr3"
+        type: string
+      KERNEL_DEFCONFIG:
+        description: '内核配置文件 (defconfig)'
+        required: true
+        default: "vendor/lahaina-qgki_defconfig"
+        type: string
+      KERNELSU_CONFIG:
+        description: '是否集成 KernelSU'
+        required: true
+        default: true
+        type: boolean
+      ENABLE_LXC:
+        description: '是否开启 LXC/Docker 支持'
+        required: true
+        default: true
+        type: boolean
+      CCACHE_CONFIG:
+        description: '使用 Ccache 加速'
+        required: true
+        default: true
+        type: boolean
+      KERNELSU_TAG:
+        description: 'KernelSU 分支或 Tag'
+        required: false
+        default: "main"
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_MAXSIZE: "2G"
+      CCACHE_HARDLINK: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ccache
+        if: github.event.inputs.CCACHE_CONFIG == 'true'
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: PixelOS-inline
+
+      - name: Setup Environment
+        run: |
+          sh -c "$(curl -sSL https://raw.githubusercontent.com/akhilnarang/scripts/master/setup/android_build_env.sh)"
+          sudo apt update && sudo apt install -y bc bison build-essential curl flex g++-multilib gcc-multilib git gnupg gperf libxml2 lib32z1-dev liblz4-tool libncurses5-dev libsdl1.1-dev libssl-dev libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev
+          
+          # 安装 Proton Clang
+          export CLANG_PATH=~/clang
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang $CLANG_PATH
+
+      - name: Git kernel
+        run: |
+          git clone "${{ github.event.inputs.KERNEL_SOURCE }}" -b "${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}" kernel --depth=1
+          echo "TAG_NAME=v5.4.$(grep "^SUBLEVEL =" kernel/Makefile | awk '{print $3}')-$(date +"%Y%m%d")" >> $GITHUB_ENV
+
+      - name: Setup KernelSU
+        if: github.event.inputs.KERNELSU_CONFIG == 'true'
+        run: |
+          cd $GITHUB_WORKSPACE/kernel
+          git clone https://github.com/natsumerinchan/KernelSU.git KernelSU
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s "${{ github.event.inputs.KERNELSU_TAG }}"
+          scripts/config --file "arch/arm64/configs/${{ github.event.inputs.KERNEL_DEFCONFIG }}" -e MODULES -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
+
+      - name: Setup LXC & Docker
+        if: github.event.inputs.ENABLE_LXC == 'true'
+        run: |
+          cd $GITHUB_WORKSPACE/kernel
+          
+          # 克隆并应用 LXC 适配
+          git clone https://github.com/tomxi1997/lxc-docker-support-for-android.git utils
+          
+          # 注入 Kconfig 
+          [ -f "Kconfig" ] && echo 'source "utils/Kconfig"' >> "Kconfig"
+          
+          # 配置 defconfig
+          CONFIG_PATH="arch/arm64/configs/${{ github.event.inputs.KERNEL_DEFCONFIG }}"
+          echo "CONFIG_DOCKER=y" >> "$CONFIG_PATH"
+          sed -i '/CONFIG_ANDROID_PARANOID_NETWORK/d' "$CONFIG_PATH"
+          echo "# CONFIG_ANDROID_PARANOID_NETWORK is not set" >> "$CONFIG_PATH"
+          
+          # 应用 runc/cgroup 补丁
+          chmod +x utils/runcpatch.sh
+          if [ -f "kernel/cgroup/cgroup.c" ]; then
+              sh utils/runcpatch.sh kernel/cgroup/cgroup.c
+          elif [ -f "kernel/cgroup.c" ]; then
+              sh utils/runcpatch.sh kernel/cgroup.c
+          fi
+          
+          # 应用网络补丁 (不报错则继续)
+          if [ -f "net/netfilter/xt_qtaguid.c" ]; then
+              patch -p1 < utils/xt_qtaguid.patch || echo "Patch failed, checking context..."
+          fi
+
+      - name: Make kernel
+        run: |
+          cd $GITHUB_WORKSPACE/kernel
+          export CLANG_PATH=~/clang
+          export PATH=${CLANG_PATH}/bin:${PATH}
+          export ARCH=arm64
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          
+          # 初始化配置
+          make O=out CC="ccache clang" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LD=ld.lld ${{ github.event.inputs.KERNEL_DEFCONFIG }}
+          
+          # 内存保护：如果内存不足则禁用 LTO
+          if [[ $(echo "$(awk '/MemTotal/ {print $2}' /proc/meminfo) < 16000000" | bc -l) -eq 1 ]]; then
+              scripts/config --file out/.config -d LTO -d LTO_CLANG -d THINLTO -e LTO_NONE
+          fi
+          
+          # 开始编译
+          make O=out CC="ccache clang" ARCH=arm64 -j$(nproc) CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LD=ld.lld 2>&1 | tee kernel.log
+
+      - name: Create Anykernel3
+        run: |
+          cd $GITHUB_WORKSPACE/kernel
+          git clone https://gitlab.com/inferno0230/AnyKernel3.git --depth=1 AnyKernel3
+          if [ -f "out/arch/arm64/boot/Image" ]; then
+              cp out/arch/arm64/boot/Image AnyKernel3/
+              cd AnyKernel3
+              zip_name="PixelOS-SUSFS-LXC-martini-${{ env.TAG_NAME }}.zip"
+              zip -r "../${zip_name}" *
+              echo "ZIP_PATH=$GITHUB_WORKSPACE/kernel/${zip_name}" >> $GITHUB_ENV
+          else
+              echo "编译失败，未找到 Image 文件" && exit 1
+          fi
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-Build-${{ env.TAG_NAME }}
+          path: ${{ env.ZIP_PATH }}
+
+      - name: Upload to Release
+        if: github.event.inputs.RELEASE_CONFIG == 'true'
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "${{ env.ZIP_PATH }}"
+          tag: "martini-PixelOS-${{ env.TAG_NAME }}"
+          name: "PixelOS SUSFS+LXC ${{ env.TAG_NAME }}"
+          allowUpdates: true
+          token: ${{ secrets.GITHUB_TOKEN }}
