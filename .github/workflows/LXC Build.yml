@@ -11,12 +11,12 @@ on:
       KERNEL_SOURCE:
         description: '内核源码地址'
         required: true
-        default: "https://github.com/natsumerinchan/android_kernel_oneplus_sm8350.git"
+        default: "https://github.com/LineageOS/android_kernel_oneplus_sm8350.git"
         type: string
       KERNEL_SOURCE_BRANCH:
         description: '内核分支'
         required: true
-        default: "fourteen-qpr3"
+        default: "lineage-23.0"
         type: string
       KERNEL_DEFCONFIG:
         description: '内核配置文件 (defconfig)'
