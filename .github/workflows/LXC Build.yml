@@ -98,6 +98,7 @@ jobs:
           # 配置 defconfig
           CONFIG_PATH="arch/arm64/configs/${{ github.event.inputs.KERNEL_DEFCONFIG }}"
           echo "CONFIG_DOCKER=y" >> "$CONFIG_PATH"
+          echo "CONFIG_VLAN_8021Q=m" >> "$CONFIG_PATH"
           sed -i '/CONFIG_ANDROID_PARANOID_NETWORK/d' "$CONFIG_PATH"
           echo "# CONFIG_ANDROID_PARANOID_NETWORK is not set" >> "$CONFIG_PATH"
           
