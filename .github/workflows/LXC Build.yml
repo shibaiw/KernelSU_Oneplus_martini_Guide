@@ -16,7 +16,7 @@ on:
       KERNEL_SOURCE_BRANCH:
         description: '内核分支'
         required: true
-        default: "lineage-23.0"
+        default: "lineage-21"
         type: string
       KERNEL_DEFCONFIG:
         description: '内核配置文件 (defconfig)'
