@@ -1,5 +1,6 @@
 name: Pixel OS SUSFS & LXC Build
 
+
 on:
   workflow_dispatch:
     inputs:
@@ -82,55 +83,58 @@ jobs:
           cd $GITHUB_WORKSPACE/kernel
           git clone https://github.com/natsumerinchan/KernelSU.git KernelSU
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s "${{ github.event.inputs.KERNELSU_TAG }}"
-          scripts/config --file "arch/arm64/configs/${{ github.event.inputs.KERNEL_DEFCONFIG }}" -e MODULES -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
 
       - name: Setup LXC & Docker
         if: github.event.inputs.ENABLE_LXC == 'true'
         run: |
           cd $GITHUB_WORKSPACE/kernel
-          
-          CONFIG_PATH="arch/arm64/configs/${{ github.event.inputs.KERNEL_DEFCONFIG }}"
-          echo "CONFIG_NET_NS=y" >> "$CONFIG_PATH"
-
-          echo "CONFIG_PID_NS=y" >> "$CONFIG_PATH"
-
-          echo "CONFIG_IPC_NS=y" >> "$CONFIG_PATH"
-
-     #     echo "CONFIG_DOCKER=y" >> "$CONFIG_PATH"
-     #     echo "CONFIG_VLAN_8021Q=m" >> "$CONFIG_PATH"
-      #    sed -i '/CONFIG_ANDROID_PARANOID_NETWORK/d' "$CONFIG_PATH"
-      #    echo "# CONFIG_ANDROID_PARANOID_NETWORK is not set" >> "$CONFIG_PATH"
-          
+          # 克隆并应用 LXC 适配
+          git clone https://github.com/tomxi1997/lxc-docker-support-for-android.git utils
+          # 注入 Kconfig
+          [ -f "Kconfig" ] && echo 'source "utils/Kconfig"' >> "Kconfig"
           # 应用 runc/cgroup 补丁
-    #      chmod +x utils/runcpatch.sh
-     #     if [ -f "kernel/cgroup/cgroup.c" ]; then
-     # #        sh utils/runcpatch.sh kernel/cgroup/cgroup.c
-      #    elif [ -f "kernel/cgroup.c" ]; then
-      #        sh utils/runcpatch.sh kernel/cgroup.c
-      #    fi
-          
-          # 应用网络补丁 (不报错则继续)
-      #    if [ -f "net/netfilter/xt_qtaguid.c" ]; then
-       #       patch -p1 < utils/xt_qtaguid.patch || echo "Patch failed, checking context..."
-       #   fi
+          chmod +x utils/runcpatch.sh
+          if [ -f "kernel/cgroup/cgroup.c" ]; then
+              sh utils/runcpatch.sh kernel/cgroup/cgroup.c
+          elif [ -f "kernel/cgroup.c" ]; then
+              sh utils/runcpatch.sh kernel/cgroup.c
+          fi
+          # 应用网络补丁
+          if [ -f "net/netfilter/xt_qtaguid.c" ]; then
+              patch -p1 < utils/xt_qtaguid.patch || echo "Patch failed, skipping..."
+          fi
 
-      - name: Make kernel
+      - name: Make kernel and update stock_defconfig
         run: |
           cd $GITHUB_WORKSPACE/kernel
           export CLANG_PATH=~/clang
           export PATH=${CLANG_PATH}/bin:${PATH}
           export ARCH=arm64
           export CLANG_TRIPLE=aarch64-linux-gnu-
-          
-          # 初始化配置
-          make O=out CC="ccache clang" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LD=ld.lld ${{ github.event.inputs.KERNEL_DEFCONFIG }}
-          
-          # 内存保护：如果内存不足则禁用 LTO
+
+          # 1️⃣ 使用默认 vendor/lahaina-qgki_defconfig 生成 out/.config
+          make O=out ARCH=arm64 ${{ github.event.inputs.KERNEL_DEFCONFIG }}
+
+          # 2️⃣ 修改内核选项
+          scripts/config --file out/.config -e MODULES -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
+          scripts/config --file out/.config -e CONFIG_DOCKER
+          scripts/config --file out/.config -m CONFIG_VLAN_8021Q
+          scripts/config --file out/.config -d CONFIG_ANDROID_PARANOID_NETWORK
+
+          # 内存不足禁用 LTO
           if [[ $(echo "$(awk '/MemTotal/ {print $2}' /proc/meminfo) < 16000000" | bc -l) -eq 1 ]]; then
               scripts/config --file out/.config -d LTO -d LTO_CLANG -d THINLTO -e LTO_NONE
           fi
-          
-          # 开始编译
+
+          # 3️⃣ 应用 olddefconfig 更新依赖
+          yes "" | make O=out olddefconfig
+
+          # 4️⃣ 将修改后的选项同步到 stock_defconfig
+          make O=out ARCH=arm64 savedefconfig
+          cp out/defconfig arch/arm64/configs/stock_defconfig
+          echo "✅ stock_defconfig 已更新"
+
+          # 5️⃣ 开始正式编译
           make O=out CC="ccache clang" ARCH=arm64 -j$(nproc) CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LD=ld.lld 2>&1 | tee kernel.log
 
       - name: Create Anykernel3
@@ -162,3 +166,4 @@ jobs:
           name: "PixelOS SUSFS+LXC ${{ env.TAG_NAME }}"
           allowUpdates: true
           token: ${{ secrets.GITHUB_TOKEN }}
+
