@@ -1,4 +1,4 @@
-name: Pixel OS SUSFS & LXC Build
+name: Pixel OS SUSFS & LXC Build (Lahaina + stock_defconfig + Time)
 
 on:
   workflow_dispatch:
@@ -70,11 +70,13 @@ jobs:
           sh -c "$(curl -sSL https://raw.githubusercontent.com/akhilnarang/scripts/master/setup/android_build_env.sh)"
           sudo apt update
           sudo apt install -y \
-            bc bison build-essential curl flex g++-multilib gcc-multilib git gnupg gperf \
-            libxml2 lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev \
-            libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev \
+            bc bison build-essential curl flex git gnupg gperf \
+            libxml2 lib32z1-dev liblz4-tool libncurses5-dev \
+            libsdl1.2-dev libssl-dev libxml2-utils lzop pngcrush rsync schedtool \
+            squashfs-tools xsltproc zip zlib1g-dev \
             lld \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu
+
           # 安装 Proton Clang
           export CLANG_PATH=~/clang
           git clone --depth=1 https://github.com/kdrag0n/proton-clang $CLANG_PATH
@@ -82,7 +84,7 @@ jobs:
       - name: Git kernel
         run: |
           git clone "${{ github.event.inputs.KERNEL_SOURCE }}" -b "${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}" kernel --depth=1
-          echo "TAG_NAME=v5.4.$(grep "^SUBLEVEL =" kernel/Makefile | awk '{print $3}')-${{ env.BUILD_TIME }}" >> $GITHUB_ENV
+          echo "TAG_NAME=v5.4.$(grep '^SUBLEVEL =' kernel/Makefile | awk '{print $3}')-${{ env.BUILD_TIME }}" >> $GITHUB_ENV
 
       - name: Setup KernelSU
         if: github.event.inputs.KERNELSU_CONFIG == 'true'
@@ -117,10 +119,10 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           export LD=ld.lld
 
-          # 1️⃣ 使用 lahaina-qgki_defconfig 生成 .config
+          # 使用 lahaina-qgki_defconfig 生成 .config
           make O=out ARCH=arm64 ${{ github.event.inputs.KERNEL_DEFCONFIG }}
 
-          # 2️⃣ 应用 KernelSU / LXC / Docker / 网络选项
+          # 应用 KernelSU / LXC / Docker / 网络选项
           scripts/config --file out/.config -e MODULES -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
           scripts/config --file out/.config -e CONFIG_DOCKER
           scripts/config --file out/.config -m CONFIG_VLAN_8021Q
@@ -131,10 +133,10 @@ jobs:
               scripts/config --file out/.config -d LTO -d LTO_CLANG -d THINLTO -e LTO_NONE
           fi
 
-          # 3️⃣ 更新依赖选项
+          # 更新依赖选项
           yes "" | make O=out olddefconfig
 
-          # 4️⃣ 将最终 .config 保存回 stock_defconfig
+          # 将最终 .config 保存回 stock_defconfig
           make O=out ARCH=arm64 savedefconfig
           cp out/defconfig arch/arm64/configs/stock_defconfig
           echo "✅ stock_defconfig 已更新，包含所有定制选项"
