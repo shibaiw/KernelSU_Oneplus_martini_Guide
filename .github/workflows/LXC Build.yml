@@ -67,7 +67,6 @@ jobs:
         run: |
           sh -c "$(curl -sSL https://raw.githubusercontent.com/akhilnarang/scripts/master/setup/android_build_env.sh)"
           sudo apt update && sudo apt install -y bc bison build-essential curl flex g++-multilib gcc-multilib git gnupg gperf libxml2 lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev
-          
           # 安装 Proton Clang
           export CLANG_PATH=~/clang
           git clone --depth=1 https://github.com/kdrag0n/proton-clang $CLANG_PATH
@@ -88,23 +87,19 @@ jobs:
         if: github.event.inputs.ENABLE_LXC == 'true'
         run: |
           cd $GITHUB_WORKSPACE/kernel
-          # 克隆并应用 LXC 适配
           git clone https://github.com/tomxi1997/lxc-docker-support-for-android.git utils
-          # 注入 Kconfig
           [ -f "Kconfig" ] && echo 'source "utils/Kconfig"' >> "Kconfig"
-          # 应用 runc/cgroup 补丁
           chmod +x utils/runcpatch.sh
           if [ -f "kernel/cgroup/cgroup.c" ]; then
               sh utils/runcpatch.sh kernel/cgroup/cgroup.c
           elif [ -f "kernel/cgroup.c" ]; then
               sh utils/runcpatch.sh kernel/cgroup.c
           fi
-          # 应用网络补丁
           if [ -f "net/netfilter/xt_qtaguid.c" ]; then
               patch -p1 < utils/xt_qtaguid.patch || echo "Patch failed, skipping..."
           fi
 
-      - name: Make kernel and update stock_defconfig
+      - name: Prepare .config and update stock_defconfig
         run: |
           cd $GITHUB_WORKSPACE/kernel
           export CLANG_PATH=~/clang
@@ -112,29 +107,31 @@ jobs:
           export ARCH=arm64
           export CLANG_TRIPLE=aarch64-linux-gnu-
 
-          # 1️⃣ 使用默认 vendor/lahaina-qgki_defconfig 生成 out/.config
+          # 1️⃣ 使用 lahaina-qgki_defconfig 生成 .config
           make O=out ARCH=arm64 ${{ github.event.inputs.KERNEL_DEFCONFIG }}
 
-          # 2️⃣ 修改内核选项
+          # 2️⃣ 应用 KernelSU / LXC / Docker / 网络选项
           scripts/config --file out/.config -e MODULES -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
           scripts/config --file out/.config -e CONFIG_DOCKER
           scripts/config --file out/.config -m CONFIG_VLAN_8021Q
           scripts/config --file out/.config -d CONFIG_ANDROID_PARANOID_NETWORK
 
           # 内存不足禁用 LTO
-          if [[ $(echo "$(awk '/MemTotal/ {print $2}' /proc/meminfo) < 16000000" | bc -l) -eq 1 ]]; then
+          if [[ $(awk '/MemTotal/ {print $2}' /proc/meminfo) -lt 16000000 ]]; then
               scripts/config --file out/.config -d LTO -d LTO_CLANG -d THINLTO -e LTO_NONE
           fi
 
-          # 3️⃣ 应用 olddefconfig 更新依赖
+          # 3️⃣ 更新依赖选项
           yes "" | make O=out olddefconfig
 
-          # 4️⃣ 将修改后的选项同步到 stock_defconfig
+          # 4️⃣ 将最终 .config 保存回 stock_defconfig
           make O=out ARCH=arm64 savedefconfig
           cp out/defconfig arch/arm64/configs/stock_defconfig
-          echo "✅ stock_defconfig 已更新"
+          echo "✅ stock_defconfig 已更新，包含所有定制选项"
 
-          # 5️⃣ 开始正式编译
+      - name: Compile kernel
+        run: |
+          cd $GITHUB_WORKSPACE/kernel
           make O=out CC="ccache clang" ARCH=arm64 -j$(nproc) CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LD=ld.lld 2>&1 | tee kernel.log
 
       - name: Create Anykernel3
@@ -166,4 +163,5 @@ jobs:
           name: "PixelOS SUSFS+LXC ${{ env.TAG_NAME }}"
           allowUpdates: true
           token: ${{ secrets.GITHUB_TOKEN }}
+
 
