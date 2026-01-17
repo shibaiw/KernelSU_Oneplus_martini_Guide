@@ -56,8 +56,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Set BUILD_TIME
-        run: |
-          echo "BUILD_TIME=$(date '+%Y%m%d%H%M')" >> $GITHUB_ENV
+        run: echo "BUILD_TIME=$(date '+%Y%m%d%H%M')" >> $GITHUB_ENV
 
       - name: Ccache
         if: github.event.inputs.CCACHE_CONFIG == 'true'
@@ -68,7 +67,11 @@ jobs:
       - name: Setup Environment
         run: |
           sh -c "$(curl -sSL https://raw.githubusercontent.com/akhilnarang/scripts/master/setup/android_build_env.sh)"
-          sudo apt update && sudo apt install -y bc bison build-essential curl flex g++-multilib gcc-multilib git gnupg gperf libxml2 lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev
+          sudo apt update
+          sudo apt install -y \
+            bc bison build-essential curl flex g++-multilib gcc-multilib git gnupg gperf \
+            libxml2 lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev \
+            libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev lld
           # 安装 Proton Clang
           export CLANG_PATH=~/clang
           git clone --depth=1 https://github.com/kdrag0n/proton-clang $CLANG_PATH
@@ -105,9 +108,10 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/kernel
           export CLANG_PATH=~/clang
-          export PATH=${CLANG_PATH}/bin:${PATH}
+          export PATH=$CLANG_PATH/bin:$PATH
           export ARCH=arm64
           export CLANG_TRIPLE=aarch64-linux-gnu-
+          export LD=ld.lld
 
           # 1️⃣ 使用 lahaina-qgki_defconfig 生成 .config
           make O=out ARCH=arm64 ${{ github.event.inputs.KERNEL_DEFCONFIG }}
@@ -134,6 +138,8 @@ jobs:
       - name: Compile kernel
         run: |
           cd $GITHUB_WORKSPACE/kernel
+          export PATH=$CLANG_PATH/bin:$PATH
+          export LD=ld.lld
           make O=out CC="ccache clang" ARCH=arm64 -j$(nproc) CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LD=ld.lld 2>&1 | tee kernel.log
 
       - name: Create Anykernel3
